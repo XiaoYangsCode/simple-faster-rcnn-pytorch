@@ -74,9 +74,9 @@ class VOCBboxDataset:
         #             ' in addition to the above mentioned splits.'
         #         )
         id_list_file = os.path.join(
-            data_dir, 'ImageSets/Main/{0}.txt'.format(split))
+            data_dir, 'ImageSets/Main/{0}.txt'.format(split))  # id_list_file 为 split.txt  split为‘trainval’或者‘test’
 
-        self.ids = [id_.strip() for id_ in open(id_list_file)]
+        self.ids = [id_.strip() for id_ in open(id_list_file)]  # id_为每个样板的文件名
         self.data_dir = data_dir
         self.use_difficult = use_difficult
         self.return_difficult = return_difficult
@@ -104,27 +104,29 @@ class VOCBboxDataset:
         bbox = list()
         label = list()
         difficult = list()
+        # 解析 xml文件
         for obj in anno.findall('object'):
             # when in not using difficult split, and the object is
             # difficult, skipt it.
+            # difficult 是 0 代表容易检测  1 代表不容易被检测
             if not self.use_difficult and int(obj.find('difficult').text) == 1:
                 continue
 
             difficult.append(int(obj.find('difficult').text))
-            bndbox_anno = obj.find('bndbox')
+            bndbox_anno = obj.find('bndbox')    # bndbox （xmin,ymin,xmax,ymax） 左上角 和 右下角的坐标
             # subtract 1 to make pixel indexes 0-based
-            bbox.append([
+            bbox.append([                       
                 int(bndbox_anno.find(tag).text) - 1
-                for tag in ('ymin', 'xmin', 'ymax', 'xmax')])
-            name = obj.find('name').text.lower().strip()
-            label.append(VOC_BBOX_LABEL_NAMES.index(name))
-        bbox = np.stack(bbox).astype(np.float32)
+                for tag in ('ymin', 'xmin', 'ymax', 'xmax')])   # 让坐标从（0,0）开始所以都减去了 1
+            name = obj.find('name').text.lower().strip()        # 获取名字
+            label.append(VOC_BBOX_LABEL_NAMES.index(name))      # 通过名字加入对应的标签
+        bbox = np.stack(bbox).astype(np.float32)                # 转换成 np 数组
         label = np.stack(label).astype(np.int32)
         # When `use_difficult==False`, all elements in `difficult` are False.
         difficult = np.array(difficult, dtype=np.bool).astype(np.uint8)  # PyTorch don't support np.bool
 
         # Load a image
-        img_file = os.path.join(self.data_dir, 'JPEGImages', id_ + '.jpg')
+        img_file = os.path.join(self.data_dir, 'JPEGImages', id_ + '.jpg')  # 加载图片
         img = read_image(img_file, color=True)
 
         # if self.return_difficult:

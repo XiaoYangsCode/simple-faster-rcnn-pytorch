@@ -58,8 +58,10 @@ class FasterRCNNTrainer(nn.Module):
         self.vis = Visualizer(env=opt.env)
 
         # indicators for training status
+        # 计算混淆矩阵
         self.rpn_cm = ConfusionMeter(2)
         self.roi_cm = ConfusionMeter(21)
+        # 用于统计任意添加的变量的方差和均值，可以用来测量平均损失等，一共有 5 个字段，5 个均值
         self.meters = {k: AverageValueMeter() for k in LossTuple._fields}  # average loss
 
     def forward(self, imgs, bboxes, labels, scale):
@@ -116,6 +118,7 @@ class FasterRCNNTrainer(nn.Module):
             self.loc_normalize_mean,
             self.loc_normalize_std)
         # NOTE it's all zero because now it only support for batch=1 now
+        # 训练时，输入检测头的Roi 经过 proposal_target_creator 处理
         sample_roi_index = t.zeros(len(sample_roi))
         roi_cls_loc, roi_score = self.faster_rcnn.head(
             features,
@@ -144,6 +147,7 @@ class FasterRCNNTrainer(nn.Module):
         # ------------------ ROI losses (fast rcnn loss) -------------------#
         n_sample = roi_cls_loc.shape[0]
         roi_cls_loc = roi_cls_loc.view(n_sample, -1, 4)
+        # 选择相应类别的 loc
         roi_loc = roi_cls_loc[t.arange(0, n_sample).long().cuda(), \
                               at.totensor(gt_roi_label).long()]
         gt_roi_label = at.totensor(gt_roi_label).long()
@@ -222,6 +226,7 @@ class FasterRCNNTrainer(nn.Module):
         return self
 
     def update_meters(self, losses):
+        # 将5 个值分别送入不同的meter
         loss_d = {k: at.scalar(v) for k, v in losses._asdict().items()}
         for key, meter in self.meters.items():
             meter.add(loss_d[key])
@@ -237,6 +242,7 @@ class FasterRCNNTrainer(nn.Module):
 
 
 def _smooth_l1_loss(x, t, in_weight, sigma):
+    # x t in_weight (R,4)
     sigma2 = sigma ** 2
     diff = in_weight * (x - t)
     abs_diff = diff.abs()
@@ -247,10 +253,12 @@ def _smooth_l1_loss(x, t, in_weight, sigma):
 
 
 def _fast_rcnn_loc_loss(pred_loc, gt_loc, gt_label, sigma):
+    # pre_loc (R,4)  gt_loc (R,4)   gt_label (R,)  
     in_weight = t.zeros(gt_loc.shape).cuda()
     # Localization loss is calculated only for positive rois.
     # NOTE:  unlike origin implementation, 
     # we don't need inside_weight and outside_weight, they can calculate by gt_label
+    # loc loss 只会计算正例，将正例的权重设置为 1 其他为 0
     in_weight[(gt_label > 0).view(-1, 1).expand_as(in_weight).cuda()] = 1
     loc_loss = _smooth_l1_loss(pred_loc, gt_loc, in_weight.detach(), sigma)
     # Normalize by total number of negtive and positive rois.

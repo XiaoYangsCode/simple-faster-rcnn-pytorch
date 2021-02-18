@@ -41,21 +41,24 @@ class RegionProposalNetwork(nn.Module):
 
     """
 
+    # 计算回归坐标偏移量
+    # 计算anchors前景概率
+    # 调用 ProposalCreator和使用NMS得出2000个近似目标框的坐标
     def __init__(
             self, in_channels=512, mid_channels=512, ratios=[0.5, 1, 2],
             anchor_scales=[8, 16, 32], feat_stride=16,
             proposal_creator_params=dict(),
     ):
         super(RegionProposalNetwork, self).__init__()
-        self.anchor_base = generate_anchor_base(
+        self.anchor_base = generate_anchor_base(                    # 创建 9 个锚框的 以 cell 为中心的相对坐标（9,4）
             anchor_scales=anchor_scales, ratios=ratios)
-        self.feat_stride = feat_stride
-        self.proposal_layer = ProposalCreator(self, **proposal_creator_params)
-        n_anchor = self.anchor_base.shape[0]
+        n_anchor = self.anchor_base.shape[0]                        # 每个点对应着 9 个锚框
+        self.feat_stride = feat_stride                              # 缩小后是原图的 1/16
         self.conv1 = nn.Conv2d(in_channels, mid_channels, 3, 1, 1)
-        self.score = nn.Conv2d(mid_channels, n_anchor * 2, 1, 1, 0)
-        self.loc = nn.Conv2d(mid_channels, n_anchor * 4, 1, 1, 0)
-        normal_init(self.conv1, 0, 0.01)
+        self.score = nn.Conv2d(mid_channels, n_anchor * 2, 1, 1, 0) # 前景后景特征提取
+        self.loc = nn.Conv2d(mid_channels, n_anchor * 4, 1, 1, 0)   # 回归特征提取
+        self.proposal_layer = ProposalCreator(self, **proposal_creator_params)  # 输出2000个roi
+        normal_init(self.conv1, 0, 0.01)                            # 归一化处理
         normal_init(self.score, 0, 0.01)
         normal_init(self.loc, 0, 0.01)
 
@@ -98,39 +101,45 @@ class RegionProposalNetwork(nn.Module):
                 Its shape is :math:`(H W A, 4)`.
 
         """
-        n, _, hh, ww = x.shape
-        anchor = _enumerate_shifted_anchor(
-            np.array(self.anchor_base),
+        n, _, hh, ww = x.shape                      # (n, 512, H/16, W/16) H 和 W是原图的长宽
+        anchor = _enumerate_shifted_anchor(         # 再9个base_anchor基础上生成 hh*ww*9 个anchor，对应到原图坐标
+            np.array(self.anchor_base),             # (hh*ww*9, 4)
             self.feat_stride, hh, ww)
 
-        n_anchor = anchor.shape[0] // (hh * ww)
-        h = F.relu(self.conv1(x))
+        n_anchor = anchor.shape[0] // (hh * ww)     # hh*ww*9 // hh*ww = 9
+        h = F.relu(self.conv1(x))                   # (n, 512, hh, ww)
 
-        rpn_locs = self.loc(h)
         # UNNOTE: check whether need contiguous
         # A: Yes
-        rpn_locs = rpn_locs.permute(0, 2, 3, 1).contiguous().view(n, -1, 4)
-        rpn_scores = self.score(h)
-        rpn_scores = rpn_scores.permute(0, 2, 3, 1).contiguous()
-        rpn_softmax_scores = F.softmax(rpn_scores.view(n, hh, ww, n_anchor, 2), dim=4)
-        rpn_fg_scores = rpn_softmax_scores[:, :, :, :, 1].contiguous()
-        rpn_fg_scores = rpn_fg_scores.view(n, -1)
-        rpn_scores = rpn_scores.view(n, -1, 2)
+        rpn_locs = self.loc(h)                      # (n, 9 * 4, hh, ww) 窗口回归坐标
+        rpn_locs = rpn_locs.permute(0, 2, 3, 1).contiguous().view(n, -1, 4) # 维度上的变化 (n, 9*hh*ww, 4)
 
+        rpn_scores = self.score(h)                  # (n, 9 * 2, hh, ww) 背景分数特征
+        rpn_scores = rpn_scores.permute(0, 2, 3, 1).contiguous()  # 维度上的变化 (n, hh, ww, 9*2)
+        rpn_softmax_scores = F.softmax(
+            rpn_scores.view(n, hh, ww, n_anchor, 2), dim=4)             # 第四个维度作softmax
+        rpn_fg_scores = rpn_softmax_scores[:, :, :, :, 1].contiguous()  # 得到所有anchor前景的分类概率 (n, hh, ww, 9)，前景的标签是 1
+        rpn_fg_scores = rpn_fg_scores.view(n, -1)                       # 维度上发生变化 (n, 9*hh*ww)
+        rpn_scores = rpn_scores.view(n, -1, 2)                          # 背景分数特征 (n,  hh*ww*9, 2)  
+
+        # 对每一张图片提取 roi
+        # 调用 ProposalCreator 函数， rpn_locs 维度 (batch_size, n_anchor*hh*ww, 4) rpn_fg_scores (batch_size, n_anchor*hh*ww)
+        # anchor 维度 (hh*ww*9, 4)  image_size 维度为 (3, H, W) 是经过数据预处理后的
+        # 计算 (H/16) x (W/16) x 9 (大概20000)个anchor 属于前景的概率，并且前 12000 个并经过 NMS 得到2000个近似目标框坐标
         rois = list()
         roi_indices = list()
         for i in range(n):
             roi = self.proposal_layer(
-                rpn_locs[i].cpu().data.numpy(),
-                rpn_fg_scores[i].cpu().data.numpy(),
+                rpn_locs[i].cpu().data.numpy(),         # 位置回归
+                rpn_fg_scores[i].cpu().data.numpy(),    # 前景概率
                 anchor, img_size,
                 scale=scale)
             batch_index = i * np.ones((len(roi),), dtype=np.int32)
             rois.append(roi)
             roi_indices.append(batch_index)
 
-        rois = np.concatenate(rois, axis=0)
-        roi_indices = np.concatenate(roi_indices, axis=0)
+        rois = np.concatenate(rois, axis=0)                 # 在第 0 维度拼接 （R, 4） 如果是 训练时输出前 2000 个
+        roi_indices = np.concatenate(roi_indices, axis=0)   # (R,)
         return rpn_locs, rpn_scores, rois, roi_indices, anchor
 
 
@@ -146,18 +155,20 @@ def _enumerate_shifted_anchor(anchor_base, feat_stride, height, width):
     # !TODO: add support for torch.CudaTensor
     # xp = cuda.get_array_module(anchor_base)
     # it seems that it can't be boosed using GPU
+    # 根据相对坐标生成所有cell的绝对坐标
+    # height width 特征图的宽高
     import numpy as xp
     shift_y = xp.arange(0, height * feat_stride, feat_stride)
     shift_x = xp.arange(0, width * feat_stride, feat_stride)
-    shift_x, shift_y = xp.meshgrid(shift_x, shift_y)
-    shift = xp.stack((shift_y.ravel(), shift_x.ravel(),
-                      shift_y.ravel(), shift_x.ravel()), axis=1)
+    shift_x, shift_y = xp.meshgrid(shift_x, shift_y)                # 生成坐标网格
+    shift = xp.stack((shift_y.ravel(), shift_x.ravel(),             # shift 所有cell 偏置坐标 shape (hh*ww, 4)
+                      shift_y.ravel(), shift_x.ravel()), axis=1)    # stack 添加一个维度
 
-    A = anchor_base.shape[0]
-    K = shift.shape[0]
+    A = anchor_base.shape[0]                                        # 9 个anchor
+    K = shift.shape[0]                                              # k = hh*ww
     anchor = anchor_base.reshape((1, A, 4)) + \
-             shift.reshape((1, K, 4)).transpose((1, 0, 2))
-    anchor = anchor.reshape((K * A, 4)).astype(np.float32)
+             shift.reshape((1, K, 4)).transpose((1, 0, 2))          #（1,A,4)+(K,1,4)=(K,A,4)
+    anchor = anchor.reshape((K * A, 4)).astype(np.float32)          # 最终的形状 (K*A,4)
     return anchor
 
 

@@ -12,7 +12,7 @@ from data.dataset import preprocess
 from torch.nn import functional as F
 from utils.config import opt
 
-
+# 闭包
 def nograd(f):
     def new_f(*args,**kwargs):
         with t.no_grad():
@@ -161,16 +161,21 @@ class FasterRCNN(nn.Module):
             raise ValueError('preset must be visualize or evaluate')
 
     def _suppress(self, raw_cls_bbox, raw_prob):
+        # raw_cls_bbox  (n, class_num*4)    raw_prob  (n, class_num)
         bbox = list()
         label = list()
         score = list()
         # skip cls_id = 0 because it is the background class
         for l in range(1, self.n_class):
+            # raw_cls_bbox (n, class_num, 4)    cls_bbox_l (n, 4)  获取对应类别的预测边框
             cls_bbox_l = raw_cls_bbox.reshape((-1, self.n_class, 4))[:, l, :]
+            # 获取对应类别的 预测概率 prob_l（n,）
             prob_l = raw_prob[:, l]
             mask = prob_l > self.score_thresh
+            # 获取 预测类别大于阈值的 预测边框 和 概率
             cls_bbox_l = cls_bbox_l[mask]
             prob_l = prob_l[mask]
+            # 通过非极大值抑制筛除过多的框，得到对应的
             keep = nms(cls_bbox_l, prob_l,self.nms_thresh)
             # import ipdb;ipdb.set_trace()
             # keep = cp.asnumpy(keep)
@@ -213,6 +218,7 @@ class FasterRCNN(nn.Module):
 
         """
         self.eval()
+        # prepared_imgs预处理过的图片list     sizes 图片的大小list
         if visualize:
             self.use_preset('visualize')
             prepared_imgs = list()
@@ -224,12 +230,13 @@ class FasterRCNN(nn.Module):
                 sizes.append(size)
         else:
              prepared_imgs = imgs 
+        # 
         bboxes = list()
         labels = list()
         scores = list()
         for img, size in zip(prepared_imgs, sizes):
-            img = at.totensor(img[None]).float()
-            scale = img.shape[3] / size[1]
+            img = at.totensor(img[None]).float()            # None 表示增加一个维度
+            scale = img.shape[3] / size[1]                  # 预处理后的图片 和 原图 比率
             roi_cls_loc, roi_scores, rois, _ = self(img, scale=scale)
             # We are assuming that batch size is 1.
             roi_score = roi_scores.data
@@ -238,22 +245,28 @@ class FasterRCNN(nn.Module):
 
             # Convert predictions to bounding boxes in image coordinates.
             # Bounding boxes are scaled to the scale of the input images.
+            # 根据类别增加 mean 和 std 的复制
+            # size (1,class_num*4)
             mean = t.Tensor(self.loc_normalize_mean).cuda(). \
                 repeat(self.n_class)[None]
             std = t.Tensor(self.loc_normalize_std).cuda(). \
                 repeat(self.n_class)[None]
-
+            # roi_cls_loc (n, class_num*4)
             roi_cls_loc = (roi_cls_loc * std + mean)
+            # roi_cls_loc reshape (n, class_num, 4)
             roi_cls_loc = roi_cls_loc.view(-1, self.n_class, 4)
+            # 对 roi 进行扩展 扩展到 roi_cls_loc 形状
             roi = roi.view(-1, 1, 4).expand_as(roi_cls_loc)
+            # 计算 边框回归后的结果 （n*class_num, 4）
             cls_bbox = loc2bbox(at.tonumpy(roi).reshape((-1, 4)),
                                 at.tonumpy(roi_cls_loc).reshape((-1, 4)))
             cls_bbox = at.totensor(cls_bbox)
+            # reshape  cls_bbox  (n, class_num*4)
             cls_bbox = cls_bbox.view(-1, self.n_class * 4)
-            # clip bounding box
+            # clip bounding box 防止预测框超出图片范围
             cls_bbox[:, 0::2] = (cls_bbox[:, 0::2]).clamp(min=0, max=size[0])
             cls_bbox[:, 1::2] = (cls_bbox[:, 1::2]).clamp(min=0, max=size[1])
-
+            # roi_score (n, class_num) prob (n, class_num)
             prob = (F.softmax(at.totensor(roi_score), dim=1))
 
             bbox, label, score = self._suppress(cls_bbox, prob)

@@ -48,11 +48,14 @@ def loc2bbox(src_bbox, loc):
 
     """
 
+    # bbox + loc -> dst bbox  bbox 和 loc 都是指单张图片的信息
+
     if src_bbox.shape[0] == 0:
         return xp.zeros((0, 4), dtype=loc.dtype)
 
     src_bbox = src_bbox.astype(src_bbox.dtype, copy=False)
 
+    # box 从左上坐标右下坐标的形式 转化成 中心点加坐标的形式
     src_height = src_bbox[:, 2] - src_bbox[:, 0]
     src_width = src_bbox[:, 3] - src_bbox[:, 1]
     src_ctr_y = src_bbox[:, 0] + 0.5 * src_height
@@ -63,11 +66,13 @@ def loc2bbox(src_bbox, loc):
     dh = loc[:, 2::4]
     dw = loc[:, 3::4]
 
+    # 加上边框回归参数
     ctr_y = dy * src_height[:, xp.newaxis] + src_ctr_y[:, xp.newaxis]
     ctr_x = dx * src_width[:, xp.newaxis] + src_ctr_x[:, xp.newaxis]
     h = xp.exp(dh) * src_height[:, xp.newaxis]
     w = xp.exp(dw) * src_width[:, xp.newaxis]
 
+    # box 从中心点加坐标的形式 转化成 左上坐标右下坐标的形式
     dst_bbox = xp.zeros(loc.shape, dtype=loc.dtype)
     dst_bbox[:, 0::4] = ctr_y - 0.5 * h
     dst_bbox[:, 1::4] = ctr_x - 0.5 * w
@@ -229,6 +234,8 @@ def generate_anchor_base(base_size=16, ratios=[0.5, 1, 2],
     py = base_size / 2.
     px = base_size / 2.
 
+    # 构造 9*4 大小的 二维数组，其中4个值分别表示 左上角 和 右下角 的坐标
+    # base_size = 16 
     anchor_base = np.zeros((len(ratios) * len(anchor_scales), 4),
                            dtype=np.float32)
     for i in six.moves.range(len(ratios)):
@@ -237,7 +244,7 @@ def generate_anchor_base(base_size=16, ratios=[0.5, 1, 2],
             w = base_size * anchor_scales[j] * np.sqrt(1. / ratios[i])
 
             index = i * len(anchor_scales) + j
-            anchor_base[index, 0] = py - h / 2.
+            anchor_base[index, 0] = py - h / 2.     # 4 个坐标是，16*16 cell 为中心的相对坐标
             anchor_base[index, 1] = px - w / 2.
             anchor_base[index, 2] = py + h / 2.
             anchor_base[index, 3] = px + w / 2.
